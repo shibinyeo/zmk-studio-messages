@@ -13,6 +13,20 @@ message Request {
         bool get_lock_state = 2;
         bool lock = 3;
         bool reset_settings = 4;
+
+        // Editable macros (zmk-editable-macros module). Numbered from 100 to stay clear
+        // of fields added upstream.
+        //
+        // macro_get_info doubles as the feature probe and is deliberately a plain bool:
+        // firmware without the module skips an unknown varint safely, whereas ZMK v0.3
+        // can corrupt memory skipping an unknown length-delimited field. Clients must
+        // not send any other macro request until macro_get_info has been answered.
+        bool macro_get_info = 100;
+        MacroSlotRequest macro_get_slot = 101;
+        MacroReadRequest macro_read = 102;
+        MacroWriteRequest macro_write = 103;
+        MacroCommitRequest macro_commit = 104;
+        MacroSlotRequest macro_clear = 105;
     }
 }
 
@@ -21,6 +35,13 @@ message Response {
         GetDeviceInfoResponse get_device_info = 1;
         LockState get_lock_state = 2;
         bool reset_settings = 4;
+
+        MacroInfo macro_get_info = 100;
+        MacroSlotInfo macro_get_slot = 101;
+        MacroReadResponse macro_read = 102;
+        MacroResult macro_write = 103;
+        MacroResult macro_commit = 104;
+        MacroResult macro_clear = 105;
     }
 }
 
@@ -33,4 +54,90 @@ message Notification {
     oneof notification_type {
         LockState lock_state_changed = 1;
     }
+}
+// ---------------------------------------------------------------------------------------
+// Editable macros
+//
+// A macro is a list of steps held in a numbered slot. A step is one key tap, written as
+// the 32-bit value the `&kp` behavior takes: implicit modifiers in bits 24-31, HID usage
+// page in bits 16-23, usage id in bits 0-15.
+//
+// To change a slot: send macro_write requests carrying the steps in order, the first at
+// offset 0 and each later one starting where the previous ended, then macro_commit with
+// the total step count and the name. Nothing changes on the keyboard until the commit,
+// and a commit either replaces the whole macro and stores it, or changes nothing.
+//
+// Requests contain only varint fields (the name travels as one value per UTF-8 byte).
+// That is deliberate: ZMK v0.3's receive path mishandles string and bytes fields that
+// straddle its buffer.
+// ---------------------------------------------------------------------------------------
+
+enum MacroStatus {
+    MACRO_STATUS_OK = 0;
+    MACRO_STATUS_ERR_INVALID_SLOT = 1;
+    // A write did not continue the sequence in progress, or the commit's step count
+    // does not match what was written.
+    MACRO_STATUS_ERR_BAD_SEQUENCE = 2;
+    MACRO_STATUS_ERR_TOO_LONG = 3;
+    MACRO_STATUS_ERR_INVALID_STEP = 4;
+    MACRO_STATUS_ERR_INVALID_NAME = 5;
+    // Over the keyboard's total step budget, or its settings storage is too full.
+    MACRO_STATUS_ERR_NO_SPACE = 6;
+    MACRO_STATUS_ERR_STORAGE = 7;
+}
+
+message MacroSlotRequest {
+    uint32 slot = 1;
+}
+
+message MacroReadRequest {
+    uint32 slot = 1;
+    uint32 offset = 2;
+}
+
+message MacroWriteRequest {
+    uint32 slot = 1;
+    uint32 offset = 2;
+    // At most MacroInfo.max_write_steps per request.
+    repeated uint32 steps = 3;
+}
+
+message MacroCommitRequest {
+    uint32 slot = 1;
+    uint32 step_count = 2;
+    // The name as UTF-8, one byte per element, at most MacroInfo.max_name_len of them.
+    // Empty means no name.
+    repeated uint32 name = 3;
+}
+
+message MacroInfo {
+    uint32 protocol_version = 1;
+    uint32 slot_count = 2;
+    uint32 max_steps = 3;
+    uint32 max_name_len = 4;
+    uint32 max_write_steps = 5;
+    uint32 max_read_steps = 6;
+    // Steps the keyboard will store across all slots, and how many are in use.
+    uint32 total_steps_budget = 7;
+    uint32 total_steps_used = 8;
+}
+
+message MacroSlotInfo {
+    uint32 slot = 1;
+    uint32 step_count = 2;
+    // Empty if the slot has no name.
+    string name = 3;
+}
+
+message MacroReadResponse {
+    uint32 slot = 1;
+    uint32 offset = 2;
+    // Up to MacroInfo.max_read_steps, fewer at the end of the macro, none past it.
+    repeated uint32 steps = 3;
+}
+
+// Every outcome is wrapped in a message so that a reply is distinguishable from no
+// reply even when the status is OK (zero).
+message MacroResult {
+    MacroStatus status = 1;
 }

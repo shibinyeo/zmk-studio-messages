@@ -1,0 +1,2 @@
+zmk.core.MacroWriteRequest.steps max_count:16
+zmk.core.MacroCommitRequest.name max_count:16
